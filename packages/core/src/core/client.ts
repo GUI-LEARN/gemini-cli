@@ -84,7 +84,32 @@ export function findIndexAfterFraction(
   return contentLengths.length;
 }
 
+/*
+ * GeminiClient 类：用于管理 Gemini 聊天会话、内容生成、嵌入生成、历史压缩等核心业务逻辑。
+ * 主要职责：
+ * 1. 初始化聊天会话和内容生成器。
+ * 2. 管理聊天历史，支持自动压缩历史以节省Token。
+ * 3. 封装与底层API的交互，包括流式消息、内容生成、嵌入生成等。
+ * 4. 支持模型切换、代理设置、环境上下文注入等。
+ * 5. 处理异常与Token限制。
+ * TypeScript 语法说明：
+ * - 构造函数参数前加 private/public/protected，自动声明并初始化为成员属性。
+ * - 方法前的 async 关键字表示返回 Promise。
+ * - 泛型、类型别名、接口等用于类型安全。
+ * - 部分方法返回 Generator/AsyncGenerator，支持流式处理。
+ */
 export class GeminiClient {
+  /**
+   * chat: GeminiChat 实例，管理当前会话的历史和交互。
+   * contentGenerator: 内容生成器实例，封装底层API调用。
+   * embeddingModel: 嵌入模型名称。
+   * generateContentConfig: 默认内容生成配置（如温度、topP等）。
+   * sessionTurnCount: 当前会话轮数计数。
+   * MAX_TURNS: 单次消息流最大递归轮数，防止死循环。
+   * COMPRESSION_TOKEN_THRESHOLD: 聊天历史触发压缩的Token占比阈值。
+   * COMPRESSION_PRESERVE_THRESHOLD: 压缩后保留最新历史的比例。
+   * config: 配置对象，包含代理、模型、文件服务等。
+   */
   private chat?: GeminiChat;
   private contentGenerator?: ContentGenerator;
   private embeddingModel: string;
@@ -117,6 +142,10 @@ export class GeminiClient {
     this.loopDetector = new LoopDetectionService(config);
   }
 
+  /**
+   * 初始化内容生成器和聊天会话。
+   * @param contentGeneratorConfig 内容生成器配置。
+   */
   async initialize(contentGeneratorConfig: ContentGeneratorConfig) {
     this.contentGenerator = await createContentGenerator(
       contentGeneratorConfig,
@@ -126,6 +155,11 @@ export class GeminiClient {
     this.chat = await this.startChat();
   }
 
+  /**
+   * 获取内容生成器实例。
+   * @returns ContentGenerator
+   * 若未初始化则抛出异常。
+   */
   getContentGenerator(): ContentGenerator {
     if (!this.contentGenerator) {
       throw new Error('Content generator not initialized');
@@ -141,6 +175,11 @@ export class GeminiClient {
     this.getChat().addHistory(content);
   }
 
+  /**
+   * 获取当前 GeminiChat 实例。
+   * @returns GeminiChat
+   * 若未初始化则抛出异常。
+   */
   getChat(): GeminiChat {
     if (!this.chat) {
       throw new Error('Chat not initialized');
@@ -148,14 +187,26 @@ export class GeminiClient {
     return this.chat;
   }
 
+  /**
+   * 判断是否已初始化。
+   * @returns boolean
+   */
   isInitialized(): boolean {
     return this.chat !== undefined && this.contentGenerator !== undefined;
   }
 
+  /**
+   * 获取聊天历史。
+   * @returns Content[] 聊天内容数组
+   */
   getHistory(): Content[] {
     return this.getChat().getHistory();
   }
 
+  /**
+   * 设置聊天历史。
+   * @param history Content[] 聊天内容数组
+   */
   setHistory(history: Content[]) {
     this.getChat().setHistory(history);
   }
@@ -171,6 +222,12 @@ export class GeminiClient {
     this.chat = await this.startChat();
   }
 
+  /**
+   * 获取环境上下文信息，作为会话的初始内容。
+   * 包括当前日期、操作系统、工作目录、文件结构等。
+   * 若配置了 fullContext，则读取全部文件内容。
+   * @returns Promise<Part[]> 环境上下文内容数组
+   */
   private async getEnvironment(): Promise<Part[]> {
     const cwd = this.config.getWorkingDir();
     const today = new Date().toLocaleDateString(undefined, {
@@ -285,6 +342,17 @@ export class GeminiClient {
     }
   }
 
+  /**
+   * 发送消息并以流式方式获取响应。
+   * 支持自动递归“Please continue.”，防止模型输出被截断。
+   * @param request PartListUnion 消息内容
+   * @param signal AbortSignal 中断信号
+   * @param prompt_id string 提示ID
+   * @param turns number 最大递归轮数
+   * @param originalModel string 初始模型名
+   * @returns AsyncGenerator<ServerGeminiStreamEvent, Turn>
+   * TypeScript 语法：async * 表示异步生成器，可用于 for await...of。
+   */
   async *sendMessageStream(
     request: PartListUnion,
     signal: AbortSignal,
@@ -407,6 +475,15 @@ export class GeminiClient {
     return turn;
   }
 
+  /**
+   * 生成结构化 JSON 响应。
+   * @param contents Content[] 输入内容
+   * @param schema SchemaUnion 目标 JSON schema
+   * @param abortSignal AbortSignal 中断信号
+   * @param model string 可选，指定模型
+   * @param config GenerateContentConfig 可选，生成配置
+   * @returns Promise<Record<string, unknown>>
+   */
   async generateJson(
     contents: Content[],
     schema: SchemaUnion,
@@ -498,6 +575,14 @@ export class GeminiClient {
     }
   }
 
+  /**
+   * 生成内容（如文本），支持自定义生成配置。
+   * @param contents Content[] 输入内容
+   * @param generationConfig GenerateContentConfig 生成配置
+   * @param abortSignal AbortSignal 中断信号
+   * @param model string 可选，指定模型
+   * @returns Promise<GenerateContentResponse>
+   */
   async generateContent(
     contents: Content[],
     generationConfig: GenerateContentConfig,
@@ -553,6 +638,11 @@ export class GeminiClient {
     }
   }
 
+  /**
+   * 生成文本的嵌入向量。
+   * @param texts string[] 输入文本数组
+   * @returns Promise<number[][]> 嵌入向量数组
+   */
   async generateEmbedding(texts: string[]): Promise<number[][]> {
     if (!texts || texts.length === 0) {
       return [];
@@ -588,6 +678,13 @@ export class GeminiClient {
     });
   }
 
+  /**
+   * 尝试压缩聊天历史，减少Token占用。
+   * 仅在历史Token数超过阈值或强制压缩时触发。
+   * @param prompt_id string 提示ID
+   * @param force boolean 是否强制压缩
+   * @returns Promise<ChatCompressionInfo | null> 返回压缩前后Token统计信息或null
+   */
   async tryCompressChat(
     prompt_id: string,
     force: boolean = false,
